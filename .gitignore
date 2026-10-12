@@ -1,0 +1,10 @@
+client-upstream/
+server/.env
+server/data/
+server/backups/
+*.pfx
+*.p12
+*.key
+.env
+node_modules/
+.DS_Store

@@ -1,0 +1,69 @@
+name: Windows cloud preflight (no EXE)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/windows-cloud-preflight.yml"
+      - "scripts/apply-client-branding.mjs"
+      - "upstream.lock.json"
+permissions:
+  contents: read
+concurrency:
+  group: tiqnora-remote-windows-preflight
+  cancel-in-progress: false
+jobs:
+  source-preflight:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Tiqnora source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Run source integrity and branding tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node tests/brand-patch.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Brand patch tests failed' }
+          node tests/source-integrity.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Integrity tests failed' }
+      - name: Download pinned original source and inspect metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lock = Get-Content upstream.lock.json -Raw | ConvertFrom-Json
+          & git clone --depth 1 --branch $lock.version $lock.repository client-upstream
+          if ($LASTEXITCODE -ne 0) { throw 'Upstream clone failed' }
+          $actual = (& git -C client-upstream rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $lock.commit) { throw "Upstream SHA mismatch: $actual vs $($lock.commit)" }
+          node scripts/apply-client-branding.mjs client-upstream
+          if ($LASTEXITCODE -ne 0) { throw 'Guarded source patch failed' }
+          $rc = Get-Content client-upstream/flutter/windows/runner/Runner.rc -Raw
+          if ($rc -notmatch 'ProductName", "Tiqnora Remote') { throw 'Product metadata missing' }
+          if ($rc -notmatch 'LegalCopyright.*Purslane Tech') { throw 'Upstream credit missing' }
+          Write-Host "PASS: Windows cloud verification of RustDesk $($lock.version), pinned SHA and Tiqnora metadata."
+          Write-Warning 'NO EXE built, NO owned icon included, NO VPS started, NO public release.'
+      - name: Summarize audit
+        if: always()
+        shell: pwsh
+        run: |
+          @(
+            'Tiqnora Remote Windows source verification',
+            "Run: $env:GITHUB_RUN_ID",
+            "Repository revision: $env:GITHUB_SHA",
+            'Pinned upstream: RustDesk 1.4.9 (6c578292e8ebbbec708b76986ba8c4bc7c509747)',
+            'No EXE/MSI compiled, tested or released.'
+          ) | Set-Content -Path preflight-report.txt -Encoding utf8
+      - name: Upload text report only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tiqnora-windows-source-report
+          path: preflight-report.txt
+          retention-days: 7

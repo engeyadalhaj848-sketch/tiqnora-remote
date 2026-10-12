@@ -1,0 +1,17 @@
+import {readFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const read=p=>readFileSync(new URL('../'+p,import.meta.url),'utf8');
+const lock=JSON.parse(read('upstream.lock.json'));
+assert.equal(lock.version,'1.4.9');
+assert.match(lock.commit,/^[0-9a-f]{40}$/);
+assert.equal(lock.commit,'6c578292e8ebbbec708b76986ba8c4bc7c509747');
+const wf=read('.github/workflows/windows-cloud-preflight.yml');
+assert.match(wf,/workflow_dispatch:/);
+assert.match(wf,/runs-on: windows-2022/);
+assert.match(wf,/contents: read/);
+assert.match(wf,/Upstream SHA mismatch/);
+assert.match(wf,/node scripts\/apply-client-branding\.mjs/);
+assert.doesNotMatch(wf,/softprops\/action-gh-release|gh release create|contents: write|release: write/i);
+const landing=read('site/README.md');
+assert.match(landing,/https:\/\/tiqnora-remote\.vercel\.app/);
+console.log('PASS: pinned upstream, read-only hosted workflow, source-only product state');

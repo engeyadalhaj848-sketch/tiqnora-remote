@@ -1,0 +1,9 @@
+{
+  "product": "Tiqnora Remote",
+  "baseProject": "RustDesk OSS client",
+  "version": "1.4.9",
+  "repository": "https://github.com/rustdesk/rustdesk.git",
+  "commit": "6c578292e8ebbbec708b76986ba8c4bc7c509747",
+  "license": "AGPL-3.0",
+  "verifiedAt": "2026-10-12"
+}
