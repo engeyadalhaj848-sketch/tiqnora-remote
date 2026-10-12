@@ -1,0 +1,196 @@
+name: Experimental Windows x64 build (not released)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/windows-experimental-build.yml"
+permissions:
+  contents: read
+concurrency:
+  group: tiqnora-remote-experimental-build
+  cancel-in-progress: false
+env:
+  UPSTREAM_COMMIT: 6c578292e8ebbbec708b76986ba8c4bc7c509747
+  RUST_VERSION: "1.75"
+  LLVM_VERSION: "15.0.6"
+  FLUTTER_BUILD_VERSION: "3.24.5"
+  FLUTTER_BRIDGE_VERSION: "3.22.3"
+  VCPKG_COMMIT_ID: 120deac3062162151622ca4860575a33844ba10b
+  VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+jobs:
+  generate-bridge:
+    name: Generate Rust/Flutter bindings
+    runs-on: ubuntu-22.04
+    timeout-minutes: 85
+    steps:
+      - name: Checkout Tiqnora pipeline
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Clone and verify upstream source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 1.4.9 --recurse-submodules https://github.com/rustdesk/rustdesk.git upstream
+          actual="$(git -C upstream rev-parse HEAD)"
+          test "$actual" = "$UPSTREAM_COMMIT" || { echo "::error::Upstream SHA mismatch: $actual"; exit 1; }
+      - name: Install Ubuntu bridge dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y ca-certificates clang cmake curl gcc g++ git libclang-dev libgtk-3-dev llvm-dev nasm ninja-build pkg-config wget
+      - name: Install Rust 1.75 for upstream
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: "1.75"
+          components: rustfmt
+      - name: Install Flutter for upstream bridge
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: "3.22.3"
+      - name: Generate bridge code from pinned upstream
+        working-directory: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-expand --version 1.0.95 --locked
+          cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid --locked
+          # Upstream has this compatibility adjustment for Flutter 3.22.3.
+          sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          (cd flutter && flutter pub get)
+          flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
+          cp flutter/macos/Runner/bridge_generated.h flutter/ios/Runner/bridge_generated.h
+          test -s src/bridge_generated.rs
+          test -s flutter/lib/generated_bridge.dart
+      - name: Transfer generated source files to Windows job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rustdesk-1-4-9-generated-bridge
+          path: |
+            upstream/src/bridge_generated.rs
+            upstream/src/bridge_generated.io.rs
+            upstream/flutter/lib/generated_bridge.dart
+            upstream/flutter/lib/generated_bridge.freezed.dart
+            upstream/flutter/macos/Runner/bridge_generated.h
+            upstream/flutter/ios/Runner/bridge_generated.h
+          if-no-files-found: error
+          retention-days: 2
+
+  build-windows:
+    name: Windows x64 build (unsigned development artifact)
+    needs: generate-bridge
+    runs-on: windows-2022
+    timeout-minutes: 160
+    steps:
+      - name: Checkout Tiqnora pipeline
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Clone pinned RustDesk source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & git clone --depth 1 --branch 1.4.9 --recurse-submodules https://github.com/rustdesk/rustdesk.git upstream
+          if ($LASTEXITCODE -ne 0) { throw 'Upstream checkout failed' }
+          $actual = (& git -C upstream rev-parse HEAD).Trim()
+          if ($actual -ne $env:UPSTREAM_COMMIT) { throw "Upstream SHA mismatch: $actual" }
+      - name: Restore generated Rust/Flutter bridge
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rustdesk-1-4-9-generated-bridge
+          path: upstream
+      - name: Prepare Tiqnora Windows icon and guarded metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --disable-pip-version-check Pillow==11.3.0
+          if ($LASTEXITCODE -ne 0) { throw 'Pillow installation failed' }
+          python scripts/create-windows-icon.py branding/tiqnora-logo.png "$env:RUNNER_TEMP/tiqnora.ico"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows icon generation failed' }
+          node scripts/apply-client-branding.mjs upstream --icon "$env:RUNNER_TEMP/tiqnora.ico"
+          if ($LASTEXITCODE -ne 0) { throw 'Brand metadata validation failed' }
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: "15.0.6"
+      - name: Install Flutter Windows toolchain
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: "3.24.5"
+      - name: Flutter Windows prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter doctor -v
+          flutter precache --windows
+          flutter_root="$(dirname "$(dirname "$(command -v flutter)")")"
+          cd "$flutter_root"
+          git apply "$GITHUB_WORKSPACE/upstream/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+      - name: Install pinned Rust compiler
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: "1.75"
+          targets: x86_64-pc-windows-msvc
+      - name: Expose GitHub Actions cache values to vcpkg
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+      - name: Install pinned vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: 120deac3062162151622ca4860575a33844ba10b
+          doNotCache: false
+      - name: Install upstream native dependencies
+        working-directory: upstream
+        shell: bash
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        run: |
+          set -euo pipefail
+          "$VCPKG_ROOT/vcpkg" install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
+      - name: Build RustDesk Windows client from locally branded source
+        working-directory: upstream
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          if ($LASTEXITCODE -ne 0) { throw 'Windows Rust/Flutter compilation failed' }
+          $bin = 'flutter/build/windows/x64/runner/Release/rustdesk.exe'
+          if (-not (Test-Path $bin)) { throw "Expected executable not found: $bin" }
+          $hash = (Get-FileHash $bin -Algorithm SHA256).Hash
+          "BUILD SHA256: $hash" | Out-File "$env:GITHUB_STEP_SUMMARY" -Append
+      - name: Bundle experimental unsigned build (not an official release)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = 'upstream/flutter/build/windows/x64/runner/Release'
+          if (-not (Test-Path "$source/rustdesk.exe")) { throw 'Missing EXE in compiled bundle' }
+          New-Item -ItemType Directory -Path development-only | Out-Null
+          Copy-Item "$source/*" development-only/ -Recurse -Force
+          @'
+          EXPERIMENTAL UNSIGNED WINDOWS BUILD — DEVELOPMENT ONLY
+          This is NOT a Tiqnora Remote public release or supported installer.
+          Do not install on client or production devices. No two-device or security testing yet.
+          RustDesk 1.4.9 upstream: https://github.com/rustdesk/rustdesk/tree/1.4.9
+          Tiqnora modifications: see this repository's scripts/apply-client-branding.mjs.
+          Original RustDesk intellectual-property notices and AGPL-3.0 obligations remain.
+          Not all RustDesk UI strings, windows services or filenames have been rebranded.
+          This build has no Tiqnora VPS, may use upstream default networking if started,
+          and has not been security-reviewed. NEVER use for customer sessions.
+          '@ | Set-Content development-only/READ_THIS_FIRST.txt -Encoding UTF8
+          $sha = (Get-FileHash "$source/rustdesk.exe" -Algorithm SHA256).Hash
+          "$sha  rustdesk.exe" | Set-Content development-only/SHA256SUMS.txt -Encoding ASCII
+      - name: Save development artifact (never publish a GitHub Release)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tiqnora-remote-EXPERIMENTAL-UNSIGNED-NOT-FOR-USERS
+          path: development-only/
+          if-no-files-found: error
+          retention-days: 2

@@ -1,0 +1,15 @@
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+const file=p=>readFileSync(new URL("../"+p,import.meta.url),"utf8");
+const w=file(".github/workflows/windows-experimental-build.yml");
+assert.match(w,/runs-on: windows-2022/);
+assert.match(w,/runs-on: ubuntu-22.04/);
+assert.match(w,/UPSTREAM_COMMIT: 6c578292e8ebbbec708b76986ba8c4bc7c509747/);
+assert.match(w,/cargo install flutter_rust_bridge_codegen/);
+assert.match(w,/python build\.py --portable --flutter/);
+assert.match(w,/node scripts\/apply-client-branding\.mjs upstream --icon/);
+assert.match(w,/Read_THIS_FIRST/i);
+assert.match(w,/contents: read/);
+assert.doesNotMatch(w,/(gh release create|softprops\/action-gh-release|contents: write|--prod|vercel deploy)/);
+assert.match(file("docs/RELEASE_GATE.md"),/Do not publish|do not publish/i);
+console.log("PASS: experimental CI produces only limited-lifetime non-release artifact");

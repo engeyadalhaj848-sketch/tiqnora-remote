@@ -12,4 +12,4 @@
 - [ ] Licensed, stable, monitored server for ID/relay before public launch.
 - [ ] Real EXE/MSI URLs only after approval; no non-working or misleading download link.
 
-There is no functioning Tiqnora Remote installer at this stage.
+Experimental Windows Actions builds, if successful, are unsigned **development artifacts only** — not published official releases. They currently retain some upstream RustDesk branding and have not been tested on real devices.
